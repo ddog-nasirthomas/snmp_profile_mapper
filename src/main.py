@@ -1,5 +1,6 @@
 
 from pathlib import Path
+from tabulate import tabulate
 #TODO: Account for custom profiles
 SNMP_PROFILES = Path("../../integrations-core/snmp/datadog_checks/snmp/data/default_profiles")
 
@@ -25,12 +26,21 @@ def parse_snmp_walk():
     
     current_oid = None
     for line in lines:
+        # Skip comment lines and empty lines
+        invalid_line = line.strip()
+        if not invalid_line or invalid_line.startswith("#"):
+            continue
+            
+        # Normalize iso prefix to 1
         new_line = line.replace("iso", "1")
+        
+        # Only lines with " = " are new OID entries
         if " = " in new_line:
             parts = new_line.split(" = ", 1)
             current_oid = parts[0].lstrip(".")
             oids[current_oid] = parts[1].strip() if len(parts) > 1 else ""
         elif current_oid and new_line.strip():
+            # Continuation line - append to previous OID's value
             oids[current_oid] += " " + new_line.strip()
     
     return oids
@@ -256,21 +266,18 @@ def write_metrics_to_file():
     file = "test.txt"
     sys_obj_id = get_sys_obj_id()
 
-    with open("test.txt", "w") as f:
+    # Prepare table data
+    table_data = list(metrics.values())
+    headers = ["Metric Name", "OID", "Interface", "Value", "Found In Profile"]
+    
+    with open(file, "w") as f:
         f.write(f"Profiles Found for Sys Obj ID: {sys_obj_id}\n")
         for profile in profiles:
             profile_filename = Path(profile).name
-            f.write(profile_filename)
-            f.write("\n")
+            f.write(f"  - {profile_filename}\n")
         f.write("\n")
-        f.write("Metric Name | OID | Interface | Value | Found In Profile\n")
-
-    with open(file, "a") as f:
-        for _, metric_data in metrics.items():
-            metric_name, oid, interface, value, found_in = metric_data
-            f.write(
-                f"{metric_name} | {oid} | {interface} | {value} | {found_in}\n"
-            )
+        f.write(tabulate(table_data, headers=headers, tablefmt="grid"))
+        f.write("\n")
     
     print(file, "created")
 
