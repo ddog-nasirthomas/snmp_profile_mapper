@@ -3,13 +3,13 @@ from pathlib import Path
 #TODO: Account for custom profiles
 SNMP_PROFILES = Path("../../integrations-core/snmp/datadog_checks/snmp/data/default_profiles")
 
-# Cache for sysObjectID and profiles (set once, reused throughout)
+# Cache for sysObjectID and profiles
 _cached_sys_obj_id = "NOT_SET"
 _cached_profiles = "NOT_SET"
 
 def parse_snmp_walk():
     ##TODO: Put notice for user to replace file path
-    file = "snmp_walk.txt"
+    file = "test_snmp_walk.txt"
     oids = {}
     
     # Try different encodings to handle various SNMP walk output formats
@@ -23,15 +23,16 @@ def parse_snmp_walk():
     else:
         raise ValueError(f"Could not decode {file} with any supported encoding")
     
+    current_oid = None
     for line in lines:
-            new_line = line.replace("iso", "1")
-            oid = new_line.split(" = ")
-            try:
-                oid_key = oid[0].lstrip(".")
-                oids[oid_key] = oid[1].strip()
-            except:
-                oid_key = oid[0].lstrip(".")
-                oids[oid_key] = ""
+        new_line = line.replace("iso", "1")
+        if " = " in new_line:
+            parts = new_line.split(" = ", 1)
+            current_oid = parts[0].lstrip(".")
+            oids[current_oid] = parts[1].strip() if len(parts) > 1 else ""
+        elif current_oid and new_line.strip():
+            oids[current_oid] += " " + new_line.strip()
+    
     return oids
     
 def find_oid(oid: str):
@@ -241,7 +242,7 @@ def map_walk_to_metrics():
                 break
         
         if not matched:
-            found_in = ""
+            found_in = "N/A"
             metric_name = "N/A"
         
         metric_data = [metric_name, base_oid, interface, value, found_in]
