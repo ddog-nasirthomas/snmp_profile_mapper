@@ -3,31 +3,49 @@ from pathlib import Path
 #TODO: Account for custom profiles
 SNMP_PROFILES = Path("../../integrations-core/snmp/datadog_checks/snmp/data/default_profiles")
 
+# Cache for sysObjectID and profiles (set once, reused throughout)
+_cached_sys_obj_id = "NOT_SET"
+_cached_profiles = "NOT_SET"
+
 def parse_snmp_walk():
     ##TODO: Put notice for user to replace file path
     file = "snmp_walk.txt"
     oids = {}
-    with open(file, "r") as f:
-        for line in f:
+    
+    # Try different encodings to handle various SNMP walk output formats
+    for encoding in ['utf-8', 'utf-16', 'latin-1']:
+        try:
+            with open(file, "r", encoding=encoding) as f:
+                lines = f.readlines()
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError(f"Could not decode {file} with any supported encoding")
+    
+    for line in lines:
             new_line = line.replace("iso", "1")
             oid = new_line.split(" = ")
             try:
-                oids[oid[0]] = oid[1].strip()
+                oid_key = oid[0].lstrip(".")
+                oids[oid_key] = oid[1].strip()
             except:
-                oids[oid[0]] = ""
+                oid_key = oid[0].lstrip(".")
+                oids[oid_key] = ""
     return oids
     
 def find_oid(oid: str):
     snmp_walk = parse_snmp_walk()
-    try:
-        if oid in snmp_walk:
-            raw_oid = snmp_walk.get(oid)
-            normalized_oid = raw_oid.split("OID:")[1]
-            return normalized_oid
-        else:
-            print("Can't find the oid")
-    except:
-        print("no")
+    if oid not in snmp_walk:
+        print(f"Can't find OID {oid} in SNMP walk")
+        return None
+    
+    raw_oid = snmp_walk.get(oid)
+    if "OID:" in raw_oid:
+        result = raw_oid.split("OID:")[1].strip()
+    else:
+        result = raw_oid.strip()
+    return result.lstrip(".")
 
 def normalize_sys_id(oid):
     if "#" in oid:
@@ -84,8 +102,28 @@ def match_sys_oid(sys_oid: str, oid: str) -> bool:
     else:
         return sys_oid == oid
 
-def profile_matcher():
+def get_sys_obj_id():
+    """Get the sysObjectID, prompting user if not found in walk. Caches the result."""
+    global _cached_sys_obj_id
+    if _cached_sys_obj_id != "NOT_SET":
+        return _cached_sys_obj_id
+    
     sys_obj_id = find_oid("1.3.6.1.2.1.1.2.0")
+    if sys_obj_id is None:
+        print("Could not find sysObjectID (1.3.6.1.2.1.1.2.0) in SNMP walk.")
+        user_input = input("Enter the sysObjectID manually (or press Enter to skip profile matching): ").strip()
+        if user_input:
+            # Normalize: strip leading dot if present
+            sys_obj_id = user_input.lstrip(".")
+    
+    _cached_sys_obj_id = sys_obj_id
+    return sys_obj_id
+
+def profile_matcher():
+    sys_obj_id = get_sys_obj_id()
+    if sys_obj_id is None:
+        return None
+    
     profiles = build_profile_oid_map()
     matching = {}
 
@@ -113,7 +151,16 @@ def select_best_matching_profile(matching_profiles: dict):
     return matching_profile
 
 def extract_all_profiles():
+    global _cached_profiles
+    if _cached_profiles != "NOT_SET":
+        return _cached_profiles
+    
     profile = profile_matcher()
+    if profile is None or profile == "":
+        print("No matching profile found. Will output raw SNMP walk data without profile matching.")
+        _cached_profiles = []
+        return []
+    
     default_profile = f"{SNMP_PROFILES}/{profile}"
     extended_profiles = []
 
@@ -137,6 +184,7 @@ def extract_all_profiles():
     
     profile_list.append(default_profile)
 
+    _cached_profiles = profile_list
     return profile_list
 
 def extract_profile_metrics():
@@ -148,11 +196,14 @@ def extract_profile_metrics():
         with open(profile, "r") as f:
             for line in f:
                 try:
-                    if not "OID" in line:
+                    if "OID:" not in line:
                         prev_line = line.strip()
                         continue
                     ## TODO: Fix this naming
                     raw_oid = normalize_sys_id(line)
+                    if "OID: " not in raw_oid:
+                        prev_line = line.strip()
+                        continue
                     oid = raw_oid.split("OID: ")[1]
                     # Grab the OID then get the next line for the name
                     next_line = next(f).strip()
@@ -200,15 +251,26 @@ def map_walk_to_metrics():
 
 def write_metrics_to_file():
     metrics = map_walk_to_metrics()
+    profiles = extract_all_profiles()
+    file = "test.txt"
+    sys_obj_id = get_sys_obj_id()
 
     with open("test.txt", "w") as f:
+        f.write(f"Profiles Found for Sys Obj ID: {sys_obj_id}\n")
+        for profile in profiles:
+            profile_filename = Path(profile).name
+            f.write(profile_filename)
+            f.write("\n")
+        f.write("\n")
         f.write("Metric Name | OID | Interface | Value | Found In Profile\n")
 
-    with open("test.txt", "a") as f:
+    with open(file, "a") as f:
         for _, metric_data in metrics.items():
             metric_name, oid, interface, value, found_in = metric_data
             f.write(
                 f"{metric_name} | {oid} | {interface} | {value} | {found_in}\n"
             )
+    
+    print(file, "created")
 
 write_metrics_to_file()
